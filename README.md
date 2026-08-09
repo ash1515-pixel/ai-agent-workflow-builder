@@ -4,6 +4,10 @@ FlowPilot is a full-stack submission for the AI Agent Workflow Builder assignmen
 
 ![FlowPilot workflow concept](design/flowpilot-concept.png)
 
+## Live preview
+
+[Open the deployed FlowPilot preview](https://ai-agent-workflow-builder-i5mu350ch-ac858247-gmailcoms-projects.vercel.app)
+
 ## What works now
 
 - A polished React/Next.js builder for a multi-step workflow: LLM call → HTTP request → conditional branch → approval gate → notify.
