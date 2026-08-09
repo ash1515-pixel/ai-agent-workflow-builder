@@ -1,0 +1,14 @@
+- name: research_request_starts_workflow
+  definition:
+    enable_manual: false
+    insert:
+      columns: '*'
+  table: { schema: public, name: workflow_artifacts }
+  webhook: '{{ACTION_BASE_URL}}/api/webhook/content-research'
+  headers:
+    - name: x-webhook-secret
+      value_from_env: WEBHOOK_SHARED_SECRET
+  retry_conf:
+    num_retries: 2
+    interval_sec: 10
+    timeout_sec: 60

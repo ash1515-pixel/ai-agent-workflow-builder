@@ -1,0 +1,14 @@
+DROP VIEW IF EXISTS public.organization_usage_current_month;
+DROP TABLE IF EXISTS public.workflow_artifacts;
+DROP TABLE IF EXISTS public.step_runs;
+DROP TABLE IF EXISTS public.workflow_runs;
+DROP TABLE IF EXISTS public.workflow_triggers;
+DROP TABLE IF EXISTS public.workflow_steps;
+DROP TABLE IF EXISTS public.workflows;
+DROP TABLE IF EXISTS public.org_members;
+DROP TABLE IF EXISTS public.organizations;
+DROP TYPE IF EXISTS public.step_run_status;
+DROP TYPE IF EXISTS public.workflow_run_status;
+DROP TYPE IF EXISTS public.workflow_trigger_type;
+DROP TYPE IF EXISTS public.workflow_step_type;
+DROP TYPE IF EXISTS public.org_role;

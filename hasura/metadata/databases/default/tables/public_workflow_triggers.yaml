@@ -1,0 +1,24 @@
+table: { schema: public, name: workflow_triggers }
+object_relationships:
+  - name: workflow
+    using: { foreign_key_constraint_on: workflow_id }
+select_permissions:
+  - role: user
+    permission:
+      columns: [id, workflow_id, type, enabled, config, created_at]
+      filter: { workflow: { organization: { org_members: { user_id: { _eq: X-Hasura-User-Id } } } } }
+insert_permissions:
+  - role: user
+    permission:
+      columns: [workflow_id, type, enabled, config]
+      check: { workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _eq: owner } }] } } } }
+update_permissions:
+  - role: user
+    permission:
+      columns: [enabled, config]
+      filter: { workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _eq: owner } }] } } } }
+      check: { workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _eq: owner } }] } } } }
+delete_permissions:
+  - role: user
+    permission:
+      filter: { workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _eq: owner } }] } } } }

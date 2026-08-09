@@ -1,0 +1,16 @@
+table: { schema: public, name: organization_usage_current_month }
+object_relationships:
+  - name: organization
+    using:
+      manual_configuration:
+        remote_table: { schema: public, name: organizations }
+        insertion_order: null
+        column_mapping: { organization_id: id }
+select_permissions:
+  - role: user
+    permission:
+      columns: [organization_id, calls_allowed, completed_calls_this_month, average_completed_run_seconds]
+      filter:
+        organization:
+          org_members:
+            user_id: { _eq: X-Hasura-User-Id }

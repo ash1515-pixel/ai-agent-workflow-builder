@@ -1,0 +1,32 @@
+table: { schema: public, name: workflows }
+object_relationships:
+  - name: organization
+    using: { foreign_key_constraint_on: organization_id }
+array_relationships:
+  - name: steps
+    using: { foreign_key_constraint_on: workflow_id }
+  - name: triggers
+    using: { foreign_key_constraint_on: workflow_id }
+  - name: runs
+    using: { foreign_key_constraint_on: workflow_id }
+select_permissions:
+  - role: user
+    permission:
+      columns: [id, organization_id, name, description, is_active, created_by, created_at, updated_at]
+      filter: { organization: { org_members: { user_id: { _eq: X-Hasura-User-Id } } } }
+insert_permissions:
+  - role: user
+    permission:
+      columns: [organization_id, name, description, is_active, created_by]
+      set: { created_by: X-Hasura-User-Id }
+      check: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _in: [owner, editor] } }] } } }
+update_permissions:
+  - role: user
+    permission:
+      columns: [name, description, is_active]
+      filter: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _in: [owner, editor] } }] } } }
+      check: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _in: [owner, editor] } }] } } }
+delete_permissions:
+  - role: user
+    permission:
+      filter: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _eq: owner } }] } } }

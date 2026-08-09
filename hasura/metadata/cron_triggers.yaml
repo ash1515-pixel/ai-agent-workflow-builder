@@ -1,0 +1,13 @@
+- name: nightly_content_research
+  webhook: '{{ACTION_BASE_URL}}/api/webhook/content-research'
+  schedule: '0 2 * * *'
+  include_in_metadata: true
+  payload: { source: scheduled }
+  headers:
+    - name: x-webhook-secret
+      value_from_env: WEBHOOK_SHARED_SECRET
+  retry_conf:
+    num_retries: 2
+    retry_interval_seconds: 30
+    timeout_seconds: 60
+    tolerance_seconds: 21600
