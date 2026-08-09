@@ -17,6 +17,16 @@ custom_types:
   input_objects: []
   objects:
     - name: TriggerWorkflowRunOutput
+      fields:
+        - name: run_id
+          type: uuid!
+        - name: status
+          type: String!
     - name: ApproveStepOutput
+      fields:
+        - name: run_id
+          type: uuid!
+        - name: status
+          type: String!
   scalars: []
   enums: []

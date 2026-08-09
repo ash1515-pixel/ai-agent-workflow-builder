@@ -6,7 +6,7 @@
 
 ## Two permission layers
 
-Layer 1 is Hasura row permissions in `hasura/metadata`. All read filters traverse `organization → org_members` and compare `user_id` to `X-Hasura-User-Id`; writes additionally require the matching member role. This makes guessed UUIDs inert because the database returns no rows for another organization. Owners alone can manage membership. Editors can author standard workflow structure. Viewers are read-only.
+Layer 1 is Hasura row permissions in `hasura/metadata`. All read filters traverse `organization → org_members` and compare `user_id` to `X-Hasura-User-Id`; writes additionally require the matching member role. The `workflow_steps` check adds an owner-only branch for `db_write` and `notify`, while all webhook-trigger writes are owner-only. This makes guessed UUIDs inert because the database returns no rows for another organization. Owners alone can manage membership. Editors can author standard workflow structure. Viewers are read-only.
 
 Layer 2 is application authorization in the Action handler. `triggerWorkflowRun` resolves the workflow, rechecks the caller is an owner/editor member of exactly that organization, validates quota, and then creates the run. Editing code independently rejects `notify` and `db_write` for non-owners, and rejects webhook triggers for non-owners. `approveStep` rechecks the run's org membership and owner/editor role before changing the paused step. This second check is essential: mid-run approval is an orchestration decision, not simply a row update.
 

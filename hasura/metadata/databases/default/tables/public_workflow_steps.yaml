@@ -14,13 +14,23 @@ insert_permissions:
   - role: user
     permission:
       columns: [workflow_id, position, type, name, config]
-      check: { workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _in: [owner, editor] } }] } } } }
+      check:
+        _and:
+          - workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _in: [owner, editor] } }] } } }
+          - _or:
+              - type: { _nin: [db_write, notify] }
+              - workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _eq: owner } }] } } }
 update_permissions:
   - role: user
     permission:
       columns: [position, name, config]
       filter: { workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _in: [owner, editor] } }] } } } }
-      check: { workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _in: [owner, editor] } }] } } } }
+      check:
+        _and:
+          - workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _in: [owner, editor] } }] } } }
+          - _or:
+              - type: { _nin: [db_write, notify] }
+              - workflow: { organization: { org_members: { _and: [{ user_id: { _eq: X-Hasura-User-Id } }, { role: { _eq: owner } }] } } }
 delete_permissions:
   - role: user
     permission:
