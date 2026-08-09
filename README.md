@@ -6,12 +6,12 @@ FlowPilot is a full-stack submission for the AI Agent Workflow Builder assignmen
 
 ## Live preview
 
-[Open the deployed FlowPilot preview](https://ai-agent-workflow-builder-i5mu350ch-ac858247-gmailcoms-projects.vercel.app)
+[Open the deployed FlowPilot app](https://ai-agent-workflow-builder-jet.vercel.app)
 
 ## What works now
 
 - A polished React/Next.js builder for a multi-step workflow: LLM call → HTTP request → conditional branch → approval gate → notify.
-- A true live local execution demo: a manual run progresses one step at a time; the approval step pauses the run; approving it continues to completion without a refresh.
+- A true live browser execution demo: a manual run progresses one step at a time; the approval step pauses the run; approving it continues to completion without a refresh or background polling.
 - Retry behavior for the HTTP node (one retry before an explicitly visible fallback) and quota enforcement before each run.
 - A webhook that starts the same run without the button:
   ```sh
@@ -22,7 +22,7 @@ FlowPilot is a full-stack submission for the AI Agent Workflow Builder assignmen
 - Owner-only enforcement for sensitive step types (`notify`, `db_write`) and webhook triggers. Viewer users cannot run or approve.
 - A visual workflow builder: owners/editors can enter Edit Workflow, reorder steps, and add permitted node types. API checks are applied before the in-memory definition changes.
 
-The `llm_call` is deliberately a **disclosed 450ms deterministic stub** so reviewers can run the scenario with zero credentials (the assignment permits this when a provider key is unavailable). The HTTP step calls GitHub's public Zen endpoint and retries once.
+The `llm_call` is deliberately a **disclosed 450ms deterministic stub** so reviewers can run the scenario with zero credentials (the assignment permits this when a provider key is unavailable). The fast browser demo renders an immediate deterministic HTTP result; the deployed Action runner retains the real GitHub Zen call and one retry for Nhost/Hasura integration.
 
 ## Run locally
 

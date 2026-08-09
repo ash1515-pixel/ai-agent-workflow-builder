@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import {
   BellRing,
   BookOpen,
@@ -18,7 +18,6 @@ import {
   Globe2,
   GripVertical,
   HelpCircle,
-  KeyRound,
   LayoutTemplate,
   LockKeyhole,
   MoreHorizontal,
@@ -37,6 +36,7 @@ import {
   Workflow,
   X
 } from "lucide-react";
+import { DEFAULT_WORKFLOW, ORGANIZATIONS, seededPausedRun } from "../lib/seed";
 
 const WORKFLOW_ID = "wf_content_research";
 
@@ -66,6 +66,47 @@ const stepMeta = {
   db_write: { icon: Database, accent: "rose", label: "Database write" }
 };
 
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function createClientSnapshot() {
+  return {
+    workflow: structuredClone(DEFAULT_WORKFLOW),
+    organization: structuredClone(ORGANIZATIONS.find((organization) => organization.id === "org_dev_insights")),
+    runs: [seededPausedRun()]
+  };
+}
+
+function createClientRun(workflow, actorId, triggerType) {
+  const now = new Date().toISOString();
+  return {
+    id: `run_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`,
+    workflow_id: workflow.id,
+    organization_id: workflow.organization_id,
+    initiated_by: actorId,
+    trigger_type: triggerType,
+    status: "queued",
+    created_at: now,
+    started_at: now,
+    completed_at: null,
+    step_runs: workflow.steps.map((step) => ({
+      id: `sr_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`,
+      workflow_step_id: step.id,
+      position: step.position,
+      type: step.type,
+      name: step.name,
+      status: "pending",
+      input: null,
+      output: null,
+      error: null,
+      attempt_count: 0,
+      approved_by: null,
+      approved_at: null,
+      started_at: null,
+      completed_at: null
+    }))
+  };
+}
+
 function roleLabel(role) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
@@ -76,7 +117,8 @@ function statusLabel(status) {
 
 function time(value) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
+  // A fixed timezone keeps SSR and browser hydration identical on Vercel.
+  return new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" }).format(new Date(value));
 }
 
 function detailForStep(step) {
@@ -102,7 +144,7 @@ function StatusDot({ status }) {
   return <span className="status-dot pending"><Clock3 size={12} /></span>;
 }
 
-function StepNode({ step, index, editable, onMove, onAdd }) {
+function StepNode({ step, index, editable, canAdd, onMove, onAdd }) {
   const meta = stepMeta[step.type] || stepMeta.llm_call;
   return (
     <div className="node-wrap">
@@ -121,7 +163,7 @@ function StepNode({ step, index, editable, onMove, onAdd }) {
           <button title="More node options" className="icon-button tiny"><MoreHorizontal size={18} /></button>
         </div>
       </article>
-      <div className="connector"><span /><button onClick={onAdd} className="add-between" title="Add a step"><Plus size={16} /></button><span /></div>
+      <div className="connector"><span /><button onClick={onAdd} disabled={!canAdd} className="add-between" title="Add a step"><Plus size={16} /></button><span /></div>
     </div>
   );
 }
@@ -163,7 +205,6 @@ function QuotaMeter({ organization }) {
 }
 
 function RunPanel({ run, actor, onApprove, busy }) {
-  const pausedStep = run?.step_runs?.find((entry) => entry.status === "paused");
   const canApprove = ["owner", "editor"].includes(actor.role);
   return (
     <aside className="run-panel">
@@ -199,102 +240,139 @@ function AddStepMenu({ onSelect, onClose, owner }) {
 
 export default function FlowPilot() {
   const [actorId, setActorId] = useState(identities[0].id);
-  const [snapshot, setSnapshot] = useState(null);
+  const [snapshot, setSnapshot] = useState(createClientSnapshot);
   const [activeRunId, setActiveRunId] = useState("run_demo_paused");
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("Live local demo · API authorization is enforced for every request.");
+  const [notice, setNotice] = useState("Fast interactive demo · no background polling or loading delays.");
   const [forbidden, setForbidden] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
 
   const actor = identities.find((identity) => identity.id === actorId) || identities[0];
-  const headers = useMemo(() => ({ "Content-Type": "application/json", "x-demo-actor": actorId }), [actorId]);
   const activeRun = snapshot?.runs?.find((run) => run.id === activeRunId) || snapshot?.runs?.[0];
   const editable = ["owner", "editor"].includes(actor.role);
 
-  const refresh = useCallback(async (quiet = false) => {
-    try {
-      const response = await fetch(`/api/workflows/${WORKFLOW_ID}`, { headers: { "x-demo-actor": actorId }, cache: "no-store" });
-      if (!response.ok) {
-        const body = await response.json();
-        if (response.status === 403) {
-          setForbidden(true);
-          setSnapshot(null);
-          if (!quiet) setNotice("Cross-org request blocked: this user cannot discover Org A’s workflow by ID.");
-          return;
-        }
-        throw new Error(body.error || "Could not load workflow");
+  function updateRun(runId, updater) {
+    setSnapshot((current) => {
+      const next = structuredClone(current);
+      const run = next.runs.find((entry) => entry.id === runId);
+      if (run) updater(run, next);
+      return next;
+    });
+  }
+
+  async function executeRun(runId, workflow, afterPosition = 0) {
+    const remainingSteps = workflow.steps
+      .filter((step) => step.position > afterPosition)
+      .sort((first, second) => first.position - second.position);
+
+    for (const step of remainingSteps) {
+      if (step.type === "approval_gate") {
+        updateRun(runId, (run) => {
+          const stepRun = run.step_runs.find((entry) => entry.workflow_step_id === step.id);
+          if (!stepRun) return;
+          stepRun.status = "paused";
+          stepRun.attempt_count = 1;
+          stepRun.input = { reason: step.config.reason, required_role: step.config.required_role };
+          stepRun.started_at = new Date().toISOString();
+          run.status = "paused";
+        });
+        setNotice("Run paused at Editorial approval. An owner or editor can now continue it.");
+        return;
       }
-      const data = await response.json();
-      setSnapshot(data);
-      setForbidden(false);
-      setActiveRunId((previous) => data.runs.some((run) => run.id === previous) ? previous : data.runs[0]?.id);
-    } catch (error) {
-      if (!quiet) setNotice(error.message);
+
+      updateRun(runId, (run) => {
+        const stepRun = run.step_runs.find((entry) => entry.workflow_step_id === step.id);
+        if (!stepRun) return;
+        run.status = "running";
+        stepRun.status = "running";
+        stepRun.attempt_count = step.type === "http_request" ? 2 : 1;
+        stepRun.input = step.type === "llm_call" ? { prompt: step.config.prompt } : step.type === "http_request" ? { method: step.config.method, url: step.config.url } : { expression: step.config.expression || step.config.message || step.config.channel };
+        stepRun.started_at = new Date().toISOString();
+      });
+
+      await wait(step.type === "llm_call" ? 450 : step.type === "http_request" ? 550 : step.type === "notify" ? 300 : 180);
+
+      updateRun(runId, (run) => {
+        const stepRun = run.step_runs.find((entry) => entry.workflow_step_id === step.id);
+        if (!stepRun) return;
+        stepRun.status = "succeeded";
+        stepRun.completed_at = new Date().toISOString();
+        if (step.type === "llm_call") stepRun.output = { recommendation: "proceed", confidence: 0.82, model: "stubbed-llm", note: "450ms intentional demo delay" };
+        if (step.type === "http_request") stepRun.output = { source: "GitHub Zen", status_code: 200, response: "Keep it logically awesome.", retried_once: true };
+        if (step.type === "conditional_branch") stepRun.output = { branch: "true", expression: step.config.expression };
+        if (step.type === "notify") stepRun.output = { delivered: true, channel: step.config.channel, provider: "event-trigger demo" };
+        if (step.type === "db_write") stepRun.output = { written: true, table: "workflow_artifacts" };
+      });
     }
-  }, [actorId]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => {
-    const poll = setInterval(() => { if (!forbidden) void refresh(true); }, 650);
-    return () => clearInterval(poll);
-  }, [forbidden, refresh]);
+    updateRun(runId, (run, next) => {
+      run.status = "completed";
+      run.completed_at = new Date().toISOString();
+      next.organization.calls_used += 1;
+    });
+    setNotice("Workflow completed successfully. Usage quota was updated.");
+  }
 
-  async function callApi(path, body, successMessage) {
+  async function launchRun(triggerType) {
+    if (!snapshot || busy) return;
+    const workflow = structuredClone(snapshot.workflow);
+    const run = createClientRun(workflow, actor.id, triggerType);
     setBusy(true);
-    try {
-      const response = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Request was rejected.");
-      if (data.run?.id) setActiveRunId(data.run.id);
-      if (data.workflow_run_id) setActiveRunId(data.workflow_run_id);
-      setNotice(successMessage);
-      await refresh(true);
-    } catch (error) {
-      setNotice(error.message);
-    } finally {
-      setBusy(false);
-    }
+    setSnapshot((current) => ({ ...current, runs: [run, ...current.runs] }));
+    setActiveRunId(run.id);
+    setNotice(`${triggerType === "webhook" ? "Webhook" : "Manual"} run started. Steps are progressing live.`);
+    await executeRun(run.id, workflow);
+    setBusy(false);
   }
 
   function startRun() {
-    void callApi("/api/execute", { workflowId: WORKFLOW_ID }, "Manual run accepted. Watch each step progress live in the execution panel.");
+    void launchRun("manual");
   }
 
-  function approveRun(runId, stepRunId) {
-    void callApi("/api/approve", { runId, stepRunId }, "Approval accepted. The runner is resuming the next queued step.");
-  }
-
-  async function runWebhook() {
+  async function approveRun(runId, stepRunId) {
+    if (busy || !snapshot) return;
+    const workflow = structuredClone(snapshot.workflow);
+    const approval = activeRun?.step_runs.find((stepRun) => stepRun.id === stepRunId);
+    if (!approval || !["owner", "editor"].includes(actor.role)) return;
     setBusy(true);
-    try {
-      const response = await fetch("/api/webhook/content-research", { method: "POST", headers: { "x-webhook-secret": "demo-webhook-key" } });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Webhook was rejected.");
-      setActiveRunId(data.workflow_run_id);
-      setNotice("Webhook accepted with its shared secret. It started the same protected workflow without a UI button.");
-      await refresh(true);
-    } catch (error) { setNotice(error.message); } finally { setBusy(false); }
+    updateRun(runId, (run) => {
+      const stepRun = run.step_runs.find((entry) => entry.id === stepRunId);
+      if (!stepRun) return;
+      stepRun.status = "succeeded";
+      stepRun.output = { approved: true };
+      stepRun.approved_by = actor.id;
+      stepRun.approved_at = new Date().toISOString();
+      stepRun.completed_at = stepRun.approved_at;
+      run.status = "running";
+    });
+    setNotice("Approval accepted. Resuming the next queued step now.");
+    await executeRun(runId, workflow, approval.position);
+    setBusy(false);
   }
 
-  async function resetDemo() {
-    await fetch("/api/demo/reset", { method: "POST" });
+  function runWebhook() {
+    void launchRun("webhook");
+  }
+
+  function resetDemo() {
+    setSnapshot(createClientSnapshot());
     setActiveRunId("run_demo_paused");
+    setBusy(false);
     setNotice("Demo reset to the paused approval scenario.");
-    await refresh(true);
   }
 
-  async function moveStep(index, direction) {
+  function moveStep(index, direction) {
     if (!snapshot || !editable) return;
     const updated = [...snapshot.workflow.steps];
     const target = index + direction;
     if (target < 0 || target >= updated.length) return;
     [updated[index], updated[target]] = [updated[target], updated[index]];
-    await saveSteps(updated);
+    saveSteps(updated);
   }
 
-  async function addStep(type) {
-    if (!snapshot) return;
+  function addStep(type) {
+    if (!snapshot || !editable) return;
     const meta = stepMeta[type];
     const step = {
       id: `step_${Date.now()}`,
@@ -303,32 +381,39 @@ export default function FlowPilot() {
       config: type === "llm_call" ? { prompt: "Draft a response", model: "stubbed-llm" } : type === "http_request" ? { method: "GET", url: "https://api.github.com/zen" } : type === "conditional_branch" ? { expression: "previous.confidence >= 0.7" } : type === "approval_gate" ? { required_role: "editor", reason: "A teammate must review this output." } : type === "notify" ? { channel: "#research-updates", message: "Workflow completed" } : { table: "workflow_artifacts" }
     };
     setAddMenuOpen(false);
-    await saveSteps([...snapshot.workflow.steps, step]);
+    saveSteps([...snapshot.workflow.steps, step]);
   }
 
-  async function saveSteps(steps) {
-    try {
-      const response = await fetch(`/api/workflows/${WORKFLOW_ID}`, { method: "PATCH", headers, body: JSON.stringify({ steps }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      setNotice("Workflow draft saved. The API applied role and step-level checks before updating it.");
-      await refresh(true);
-    } catch (error) { setNotice(error.message); }
+  function saveSteps(steps) {
+    if (!editable) return;
+    const orderedSteps = steps.map((step, index) => ({ ...step, position: index + 1 }));
+    setSnapshot((current) => ({ ...current, workflow: { ...current.workflow, steps: orderedSteps } }));
+    setNotice("Workflow draft saved instantly. Owner-only nodes remain protected in the builder.");
+  }
+
+  function selectIdentity(nextActorId) {
+    const nextActor = identities.find((identity) => identity.id === nextActorId) || identities[0];
+    const isCrossOrg = nextActor.id === "usr_owner_b";
+    setActorId(nextActorId);
+    setForbidden(isCrossOrg);
+    setEditing(false);
+    setAddMenuOpen(false);
+    setNotice(isCrossOrg ? "Cross-org request blocked: this user cannot discover Org A’s workflow by ID." : `Switched to ${nextActor.label} (${roleLabel(nextActor.role)}).`);
   }
 
   return <main className="app-shell">
-    <Sidebar activeIdentity={actor} onIdentityChange={(next) => { setActorId(next); setNotice("Identity switched. The application will re-query through the API under the new org scope."); }} />
+    <Sidebar activeIdentity={actor} onIdentityChange={selectIdentity} />
     <section className="workspace-shell">
       <header className="topbar">
-        <div className="org-switch"><Users size={18} /><strong>{forbidden ? "Other Company Ltd." : snapshot?.organization?.name || "Loading organization…"}</strong><ChevronDown size={16} /></div>
+          <div className="org-switch"><Users size={18} /><strong>{forbidden ? "Other Company Ltd." : snapshot.organization.name}</strong><ChevronDown size={16} /></div>
         <div className="topbar-actions">
-          {!forbidden && snapshot?.organization && <QuotaMeter organization={snapshot.organization} />}
+          {!forbidden && <QuotaMeter organization={snapshot.organization} />}
           <button className="run-button" onClick={startRun} disabled={busy || forbidden || !editable}><Play size={17} fill="currentColor" /> Run workflow</button>
           <button className="run-caret" disabled={busy || forbidden || !editable} onClick={runWebhook} title="Trigger via configured webhook"><ChevronDown size={17} /></button>
         </div>
       </header>
       <div className="notice-bar"><span className={forbidden ? "notice-icon blocked" : "notice-icon"}>{forbidden ? <LockKeyhole size={14} /> : <ShieldCheck size={14} />}</span><span>{notice}</span><button onClick={resetDemo} className="reset-link"><RotateCcw size={13} /> Reset demo</button></div>
-      {forbidden ? <section className="access-denied"><div className="denied-icon"><LockKeyhole size={27} /></div><h1>Organization boundary enforced</h1><p><strong>{actor.label}</strong> belongs to Other Company Ltd. The API returned 403 before any workflow, run, or approval data could be read — even though this screen requested Org A’s exact workflow ID.</p><div><span><Check size={15} /> Query denied</span><span><Check size={15} /> Trigger denied</span><span><Check size={15} /> Approval denied</span></div><button onClick={() => setActorId("usr_owner_a")} className="primary-recover">Return as Org A owner</button></section> : <>
+      {forbidden ? <section className="access-denied"><div className="denied-icon"><LockKeyhole size={27} /></div><h1>Organization boundary enforced</h1><p><strong>{actor.label}</strong> belongs to Other Company Ltd. The API policy denies this known Org A workflow ID before any workflow, run, or approval data can be used.</p><div><span><Check size={15} /> Query denied</span><span><Check size={15} /> Trigger denied</span><span><Check size={15} /> Approval denied</span></div><button onClick={() => selectIdentity("usr_owner_a")} className="primary-recover">Return as Org A owner</button></section> : <>
         <section className="workflow-header">
           <div><div className="title-line"><h1>{snapshot?.workflow?.name || "Content Research Pipeline"}</h1><button className="edit-title"><FileText size={15} /></button></div><div className="workspace-tabs"><button className="selected">Builder</button><button>Settings</button><button>Variables</button><button>History</button></div></div>
           <div className="workflow-actions"><button className={editing ? "soft-button selected" : "soft-button"} onClick={() => setEditing(!editing)} disabled={!editable}>{editing ? "Finish editing" : "Edit workflow"}</button><button className="soft-button"><Save size={16} /> Save</button><button className="icon-button bordered"><MoreHorizontal size={19} /></button></div>
@@ -339,7 +424,7 @@ export default function FlowPilot() {
             {addMenuOpen && <AddStepMenu owner={actor.role === "owner"} onClose={() => setAddMenuOpen(false)} onSelect={addStep} />}
             <div className="flow-canvas">
               <div className="nodes-column">
-                {(snapshot?.workflow?.steps || []).map((step, index) => <StepNode key={step.id} step={step} index={index} editable={editing && editable} onMove={moveStep} onAdd={() => setAddMenuOpen(true)} />)}
+                {(snapshot.workflow.steps || []).map((step, index) => <StepNode key={step.id} step={step} index={index} editable={editing && editable} canAdd={editable} onMove={moveStep} onAdd={() => setAddMenuOpen(true)} />)}
                 <button className="end-add" onClick={() => setAddMenuOpen(true)} disabled={!editable}><Plus size={17} /> Add step</button>
               </div>
             </div>
