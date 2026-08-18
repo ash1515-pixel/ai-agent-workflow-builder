@@ -66,7 +66,7 @@ const stepMeta = {
   db_write: { icon: Database, accent: "rose", label: "Database write" }
 };
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function createClientSnapshot() {
   return {
@@ -107,6 +107,33 @@ function createClientRun(workflow, actorId, triggerType) {
   };
 }
 
+function fallbackLlmResult() {
+  return {
+    recommendation: "proceed",
+    confidence: 0.82,
+    summary: "The topic is sufficiently defined for editorial review.",
+    provider: "fallback",
+    model: "deterministic-fallback",
+    fallback: true,
+    note: "The secure LLM service was unavailable, so the disclosed demo fallback was used."
+  };
+}
+
+async function requestLlm(prompt) {
+  try {
+    const response = await fetch("/api/llm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt })
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.result) throw new Error("LLM request rejected");
+    return payload.result;
+  } catch {
+    return fallbackLlmResult();
+  }
+}
+
 function roleLabel(role) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
@@ -117,7 +144,6 @@ function statusLabel(status) {
 
 function time(value) {
   if (!value) return "—";
-  // A fixed timezone keeps SSR and browser hydration identical on Vercel.
   return new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" }).format(new Date(value));
 }
 
@@ -144,7 +170,7 @@ function StatusDot({ status }) {
   return <span className="status-dot pending"><Clock3 size={12} /></span>;
 }
 
-function StepNode({ step, index, editable, canAdd, onMove, onAdd }) {
+function StepNode({ step, index, editable, onMove, onAdd }) {
   const meta = stepMeta[step.type] || stepMeta.llm_call;
   return (
     <div className="node-wrap">
@@ -159,11 +185,11 @@ function StepNode({ step, index, editable, canAdd, onMove, onAdd }) {
         </div>
         <div className="node-controls">
           {editable && index > 0 && <button title="Move up" className="icon-button tiny" onClick={() => onMove(index, -1)}>↑</button>}
-          {editable && <button title="Move down" className="icon-button tiny" onClick={() => onMove(index, 1)}>↓</button>}
+          {editable && index < 99 && <button title="Move down" className="icon-button tiny" onClick={() => onMove(index, 1)}>↓</button>}
           <button title="More node options" className="icon-button tiny"><MoreHorizontal size={18} /></button>
         </div>
       </article>
-      <div className="connector"><span /><button onClick={onAdd} disabled={!canAdd} className="add-between" title="Add a step"><Plus size={16} /></button><span /></div>
+      <div className="connector"><span /><button onClick={onAdd} disabled={!editable} className="add-between" title="Add a step"><Plus size={16} /></button><span /></div>
     </div>
   );
 }
@@ -219,6 +245,7 @@ function RunPanel({ run, actor, onApprove, busy }) {
         <div className="run-steps">
           {run.step_runs.map((stepRun) => <article className={`run-step ${stepRun.status}`} key={stepRun.id}>
             <div className="run-step-top"><StatusDot status={stepRun.status} /><span className="run-step-number">{stepRun.position}</span><div><strong>{stepRun.name}</strong><p>{stepRun.status === "paused" ? "Awaiting approval" : `${statusLabel(stepRun.status)}${stepRun.completed_at ? ` · ${time(stepRun.completed_at)}` : ""}`}</p></div><ChevronRight size={17} /></div>
+            {stepRun.status === "succeeded" && stepRun.type === "llm_call" && <div className="output-box"><span>Decision:</span> <b>{stepRun.output?.recommendation || "proceed"}</b><br /><small>{stepRun.output?.summary} · {stepRun.output?.model}</small></div>}
             {stepRun.status === "succeeded" && stepRun.type === "conditional_branch" && <div className="output-box"><span>Path taken:</span> <b>{stepRun.output?.branch || "true"}</b></div>}
             {stepRun.status === "paused" && <div className="approval-box"><p><span>Requested by</span> system</p><p><span>Reason</span> {stepRun.input?.reason}</p>{canApprove ? <button onClick={() => onApprove(run.id, stepRun.id)} disabled={busy} className="approve-button"><ShieldCheck size={15} />{busy ? "Approving…" : "Review & approve"}</button> : <div className="blocked-approval"><LockKeyhole size={14} /> Viewer cannot approve</div>}</div>}
           </article>)}
@@ -249,7 +276,7 @@ export default function FlowPilot() {
   const [editing, setEditing] = useState(false);
 
   const actor = identities.find((identity) => identity.id === actorId) || identities[0];
-  const activeRun = snapshot?.runs?.find((run) => run.id === activeRunId) || snapshot?.runs?.[0];
+  const activeRun = snapshot.runs.find((run) => run.id === activeRunId) || snapshot.runs[0];
   const editable = ["owner", "editor"].includes(actor.role);
 
   function updateRun(runId, updater) {
@@ -291,16 +318,20 @@ export default function FlowPilot() {
         stepRun.started_at = new Date().toISOString();
       });
 
-      await wait(step.type === "llm_call" ? 450 : step.type === "http_request" ? 550 : step.type === "notify" ? 300 : 180);
+      const llmResult = step.type === "llm_call" ? await requestLlm(step.config.prompt) : null;
+      if (step.type !== "llm_call") await wait(step.type === "http_request" ? 550 : step.type === "notify" ? 300 : 180);
 
       updateRun(runId, (run) => {
         const stepRun = run.step_runs.find((entry) => entry.workflow_step_id === step.id);
         if (!stepRun) return;
         stepRun.status = "succeeded";
         stepRun.completed_at = new Date().toISOString();
-        if (step.type === "llm_call") stepRun.output = { recommendation: "proceed", confidence: 0.82, model: "stubbed-llm", note: "450ms intentional demo delay" };
+        if (step.type === "llm_call") stepRun.output = llmResult || fallbackLlmResult();
         if (step.type === "http_request") stepRun.output = { source: "GitHub Zen", status_code: 200, response: "Keep it logically awesome.", retried_once: true };
-        if (step.type === "conditional_branch") stepRun.output = { branch: "true", expression: step.config.expression };
+        if (step.type === "conditional_branch") {
+          const previous = run.step_runs.find((entry) => entry.workflow_step_id === "step_llm")?.output;
+          stepRun.output = { branch: (previous?.confidence ?? 0) >= 0.7 ? "true" : "false", expression: step.config.expression };
+        }
         if (step.type === "notify") stepRun.output = { delivered: true, channel: step.config.channel, provider: "event-trigger demo" };
         if (step.type === "db_write") stepRun.output = { written: true, table: "workflow_artifacts" };
       });
@@ -315,7 +346,7 @@ export default function FlowPilot() {
   }
 
   async function launchRun(triggerType) {
-    if (!snapshot || busy) return;
+    if (busy || !editable) return;
     const workflow = structuredClone(snapshot.workflow);
     const run = createClientRun(workflow, actor.id, triggerType);
     setBusy(true);
@@ -326,15 +357,11 @@ export default function FlowPilot() {
     setBusy(false);
   }
 
-  function startRun() {
-    void launchRun("manual");
-  }
-
   async function approveRun(runId, stepRunId) {
-    if (busy || !snapshot) return;
+    if (busy || !editable) return;
     const workflow = structuredClone(snapshot.workflow);
     const approval = activeRun?.step_runs.find((stepRun) => stepRun.id === stepRunId);
-    if (!approval || !["owner", "editor"].includes(actor.role)) return;
+    if (!approval) return;
     setBusy(true);
     updateRun(runId, (run) => {
       const stepRun = run.step_runs.find((entry) => entry.id === stepRunId);
@@ -351,10 +378,6 @@ export default function FlowPilot() {
     setBusy(false);
   }
 
-  function runWebhook() {
-    void launchRun("webhook");
-  }
-
   function resetDemo() {
     setSnapshot(createClientSnapshot());
     setActiveRunId("run_demo_paused");
@@ -363,7 +386,7 @@ export default function FlowPilot() {
   }
 
   function moveStep(index, direction) {
-    if (!snapshot || !editable) return;
+    if (!editable) return;
     const updated = [...snapshot.workflow.steps];
     const target = index + direction;
     if (target < 0 || target >= updated.length) return;
@@ -372,13 +395,13 @@ export default function FlowPilot() {
   }
 
   function addStep(type) {
-    if (!snapshot || !editable) return;
+    if (!editable) return;
     const meta = stepMeta[type];
     const step = {
       id: `step_${Date.now()}`,
       type,
       name: meta.label.replace(/\b\w/g, (letter) => letter.toUpperCase()),
-      config: type === "llm_call" ? { prompt: "Draft a response", model: "stubbed-llm" } : type === "http_request" ? { method: "GET", url: "https://api.github.com/zen" } : type === "conditional_branch" ? { expression: "previous.confidence >= 0.7" } : type === "approval_gate" ? { required_role: "editor", reason: "A teammate must review this output." } : type === "notify" ? { channel: "#research-updates", message: "Workflow completed" } : { table: "workflow_artifacts" }
+      config: type === "llm_call" ? { prompt: "Draft a response", model: "OpenAI Responses (secure server call)" } : type === "http_request" ? { method: "GET", url: "https://api.github.com/zen" } : type === "conditional_branch" ? { expression: "previous.confidence >= 0.7" } : type === "approval_gate" ? { required_role: "editor", reason: "A teammate must review this output." } : type === "notify" ? { channel: "#research-updates", message: "Workflow completed" } : { table: "workflow_artifacts" }
     };
     setAddMenuOpen(false);
     saveSteps([...snapshot.workflow.steps, step]);
@@ -405,17 +428,17 @@ export default function FlowPilot() {
     <Sidebar activeIdentity={actor} onIdentityChange={selectIdentity} />
     <section className="workspace-shell">
       <header className="topbar">
-          <div className="org-switch"><Users size={18} /><strong>{forbidden ? "Other Company Ltd." : snapshot.organization.name}</strong><ChevronDown size={16} /></div>
+        <div className="org-switch"><Users size={18} /><strong>{forbidden ? "Other Company Ltd." : snapshot.organization.name}</strong><ChevronDown size={16} /></div>
         <div className="topbar-actions">
           {!forbidden && <QuotaMeter organization={snapshot.organization} />}
-          <button className="run-button" onClick={startRun} disabled={busy || forbidden || !editable}><Play size={17} fill="currentColor" /> Run workflow</button>
-          <button className="run-caret" disabled={busy || forbidden || !editable} onClick={runWebhook} title="Trigger via configured webhook"><ChevronDown size={17} /></button>
+          <button className="run-button" onClick={() => void launchRun("manual")} disabled={busy || forbidden || !editable}><Play size={17} fill="currentColor" /> Run workflow</button>
+          <button className="run-caret" disabled={busy || forbidden || !editable} onClick={() => void launchRun("webhook")} title="Trigger via configured webhook"><ChevronDown size={17} /></button>
         </div>
       </header>
       <div className="notice-bar"><span className={forbidden ? "notice-icon blocked" : "notice-icon"}>{forbidden ? <LockKeyhole size={14} /> : <ShieldCheck size={14} />}</span><span>{notice}</span><button onClick={resetDemo} className="reset-link"><RotateCcw size={13} /> Reset demo</button></div>
       {forbidden ? <section className="access-denied"><div className="denied-icon"><LockKeyhole size={27} /></div><h1>Organization boundary enforced</h1><p><strong>{actor.label}</strong> belongs to Other Company Ltd. The API policy denies this known Org A workflow ID before any workflow, run, or approval data can be used.</p><div><span><Check size={15} /> Query denied</span><span><Check size={15} /> Trigger denied</span><span><Check size={15} /> Approval denied</span></div><button onClick={() => selectIdentity("usr_owner_a")} className="primary-recover">Return as Org A owner</button></section> : <>
         <section className="workflow-header">
-          <div><div className="title-line"><h1>{snapshot?.workflow?.name || "Content Research Pipeline"}</h1><button className="edit-title"><FileText size={15} /></button></div><div className="workspace-tabs"><button className="selected">Builder</button><button>Settings</button><button>Variables</button><button>History</button></div></div>
+          <div><div className="title-line"><h1>{snapshot.workflow.name}</h1><button className="edit-title"><FileText size={15} /></button></div><div className="workspace-tabs"><button className="selected">Builder</button><button>Settings</button><button>Variables</button><button>History</button></div></div>
           <div className="workflow-actions"><button className={editing ? "soft-button selected" : "soft-button"} onClick={() => setEditing(!editing)} disabled={!editable}>{editing ? "Finish editing" : "Edit workflow"}</button><button className="soft-button"><Save size={16} /> Save</button><button className="icon-button bordered"><MoreHorizontal size={19} /></button></div>
         </section>
         <section className="builder-layout">
@@ -424,7 +447,7 @@ export default function FlowPilot() {
             {addMenuOpen && <AddStepMenu owner={actor.role === "owner"} onClose={() => setAddMenuOpen(false)} onSelect={addStep} />}
             <div className="flow-canvas">
               <div className="nodes-column">
-                {(snapshot.workflow.steps || []).map((step, index) => <StepNode key={step.id} step={step} index={index} editable={editing && editable} canAdd={editable} onMove={moveStep} onAdd={() => setAddMenuOpen(true)} />)}
+                {snapshot.workflow.steps.map((step, index) => <StepNode key={step.id} step={step} index={index} editable={editing && editable} onMove={moveStep} onAdd={() => setAddMenuOpen(true)} />)}
                 <button className="end-add" onClick={() => setAddMenuOpen(true)} disabled={!editable}><Plus size={17} /> Add step</button>
               </div>
             </div>
@@ -434,7 +457,7 @@ export default function FlowPilot() {
         </section>
         <section className="workflow-footer">
           <div><Webhook size={16} /><strong>Second trigger is wired:</strong> POST <code>/api/webhook/content-research</code> with <code>x-webhook-secret</code></div>
-          <button onClick={runWebhook} disabled={busy || !editable}>Test webhook trigger <ChevronRight size={15} /></button>
+          <button onClick={() => void launchRun("webhook")} disabled={busy || !editable}>Test webhook trigger <ChevronRight size={15} /></button>
         </section>
       </>}
     </section>

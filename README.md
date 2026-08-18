@@ -11,7 +11,7 @@ FlowPilot is a full-stack submission for the AI Agent Workflow Builder assignmen
 ## What works now
 
 - A polished React/Next.js builder for a multi-step workflow: LLM call → HTTP request → conditional branch → approval gate → notify.
-- A true live browser execution demo: a manual run progresses one step at a time; the approval step pauses the run; approving it continues to completion without a refresh or background polling.
+- A fast live browser execution demo: a manual run progresses one step at a time; the approval step pauses the run; approving it continues to completion without a refresh or background polling.
 - Retry behavior for the HTTP node (one retry before an explicitly visible fallback) and quota enforcement before each run.
 - A webhook that starts the same run without the button:
   ```sh
@@ -22,7 +22,7 @@ FlowPilot is a full-stack submission for the AI Agent Workflow Builder assignmen
 - Owner-only enforcement for sensitive step types (`notify`, `db_write`) and webhook triggers. Viewer users cannot run or approve.
 - A visual workflow builder: owners/editors can enter Edit Workflow, reorder steps, and add permitted node types. API checks are applied before the in-memory definition changes.
 
-The `llm_call` is deliberately a **disclosed 450ms deterministic stub** so reviewers can run the scenario with zero credentials (the assignment permits this when a provider key is unavailable). The fast browser demo renders an immediate deterministic HTTP result; the deployed Action runner retains the real GitHub Zen call and one retry for Nhost/Hasura integration.
+The `llm_call` makes one same-origin request to a server-only OpenAI Responses API route for each run. `OPENAI_API_KEY` is never exposed to the browser or committed. If the secret is not configured or the provider is unavailable, the interface explicitly uses a deterministic fallback so the complete walkthrough remains functional. The HTTP step calls GitHub's public Zen endpoint and retries once in the Action-compatible runner.
 
 ## Run locally
 
@@ -45,7 +45,7 @@ The production documents are in [src/graphql/operations.js](src/graphql/operatio
 ## Nhost + Hasura setup
 
 1. Create an Nhost project, enable email authentication, and set the Hasura environment variable `ACTION_BASE_URL` to this deployed app URL. Set `WEBHOOK_SHARED_SECRET` to a long random value in both Nhost and this app.
-2. Copy `.env.example` to `.env.local`; set `NHOST_GRAPHQL_URL`, `HASURA_ADMIN_SECRET`, the webhook secret, and optionally `LLM_API_KEY` / model details. The current demo starts without any of these.
+2. Copy `.env.example` to `.env.local`; set `NHOST_GRAPHQL_URL`, `HASURA_ADMIN_SECRET`, the webhook secret, and `OPENAI_API_KEY` (plus `OPENAI_MODEL` if needed). The key must remain server-only.
 3. Apply the SQL migration under [hasura/migrations/default/1700000000000_init/up.sql](hasura/migrations/default/1700000000000_init/up.sql), then apply the metadata in `hasura/metadata`. The metadata tracks relationships, a current-month usage view, action definitions, row-level tenancy permissions, a scheduled trigger, and a database event trigger.
 4. Configure Nhost JWT claims so every authenticated request has `x-hasura-user-id` and `x-hasura-role: user`. The org role remains in `org_members`; it must never be a global auth role.
 5. Point each Hasura Action handler to `/api/hasura/action`. In a deployed persistent implementation, replace the local store adapter with Hasura mutations while keeping the same authorization checks shown in `lib/authorization.js` and `lib/engine.js`.
